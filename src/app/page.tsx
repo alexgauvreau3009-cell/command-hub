@@ -134,7 +134,13 @@ export default function Home() {
   const [adding, setAdding] = useState(false)
 
   // Brain dump
-  const [dumpText, setDumpText] = useState('')
+  const [dumpText, setDumpText] = useState(() => {
+    try {
+      return typeof window !== 'undefined' ? localStorage.getItem('brain_dump_text') || '' : ''
+    } catch { return '' }
+  })
+  const [dumpProcessing, setDumpProcessing] = useState(false)
+  const [dumpMsg, setDumpMsg] = useState('')
 
   // Skylight
   const [skylightItems, setSkylightItems] = useState<SkylightItem[]>(() => {
@@ -147,6 +153,13 @@ export default function Home() {
   const [newSkylightCat, setNewSkylightCat] = useState('Errands')
   const [copied, setCopied] = useState(false)
 
+  // Save brain dump text to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('brain_dump_text', dumpText)
+    } catch { /* ignore */ }
+  }, [dumpText])
+
   // Init
   useEffect(() => {
     const now = new Date()
@@ -155,6 +168,26 @@ export default function Home() {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {})
     }
+
+    // Register Chrome extension message listener for brain dump forwarding
+    if (typeof window !== 'undefined' && 'chrome' in window && 'runtime' in (window as any).chrome) {
+      try {
+        (window as any).chrome.runtime.onMessage.addListener((message: any, sender: any, sendResponse: any) => {
+          if (message.type === 'BRAIN_DUMP_ITEMS') {
+            // Process brain dump items
+            processBrainDumpItems(message.items)
+              .then(() => sendResponse({ success: true }))
+              .catch(err => sendResponse({ error: err.message }))
+            return true // Keep the message channel open for async response
+          } else if (message.type === 'tabs:outgoing.message.ready') {
+            sendResponse({ ready: true })
+          }
+        })
+      } catch (err) {
+        console.error('Failed to register Chrome extension listener:', err)
+      }
+    }
+
     // Load initial data
     loadTasks('active')
     loadEvents()
@@ -216,6 +249,33 @@ export default function Home() {
     if (tab === 'Work' && !Object.keys(asana).length) loadAsana()
     if (tab === 'Calendar' && !events.length) loadEvents()
   }, [tab])
+
+  // ─── BRAIN DUMP ACTIONS ────────────────────────────────────────
+  const processBrainDumpItems = async (items?: string[]) => {
+    const itemsToProcess = items || dumpText.split('\n').filter(line => line.trim())
+    if (itemsToProcess.length === 0) return
+
+    setDumpProcessing(true)
+    setDumpMsg('Processing…')
+    try {
+      const res = await fetch('/api/brain-dump/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: itemsToProcess }),
+      })
+      const data = await res.json()
+      if (data.error) throw new Error(data.error)
+      setDumpMsg(`✓ Processed ${data.processed} items!`)
+      setDumpText('')
+      setTimeout(() => setDumpMsg(''), 3000)
+      // Refresh relevant tabs
+      loadTasks('active')
+    } catch (e: any) {
+      setDumpMsg('Error: ' + e.message)
+    } finally {
+      setDumpProcessing(false)
+    }
+  }
 
   // ─── TASK ACTIONS ──────────────────────────────────────────────
   const markDone = async (id: string) => {
@@ -511,7 +571,10 @@ export default function Home() {
               <textarea className={styles.dumpInput} value={dumpText} onChange={e=>setDumpText(e.target.value)}
                 placeholder="What's on your mind? Dump it all here…" rows={5} />
               <div className={styles.formRow} style={{marginTop:10}}>
-                <a className={`${styles.btn} ${styles.btnDark}`}
+                <button className={`${styles.btn} ${styles.btnDark}`} onClick={() => processBrainDumpItems()} disabled={dumpProcessing || !dumpText.trim()}>
+                  {dumpProcessing ? 'Processing…' : 'Process & Forward'}
+                </button>
+                <a className={`${styles.btn}`}
                   href={`https://claude.ai/new?q=${encodeURIComponent('Process this brain dump and route each item. Personal tasks → Notion Personal Task List. Business tasks → Asana. Home/chores → Skylight list. Dates → Calendar.\n\n'+dumpText)}`}
                   target="_blank" rel="noreferrer">
                   Process in Claude
@@ -519,8 +582,9 @@ export default function Home() {
                 <a className={`${styles.btn}`}
                   href="https://docs.google.com/document/d/19ceULBLsauvSq3TiPstrRhaqDEMR8oMCVj8zyzCfxMA/edit"
                   target="_blank" rel="noreferrer">Open Brain Dump Doc</a>
-                <button className={styles.btn} onClick={()=>setDumpText('')}>Clear</button>
+                <button className={styles.btn} onClick={()=>setDumpText('')} disabled={dumpProcessing}>Clear</button>
               </div>
+              {dumpMsg && <div style={{fontSize:12, marginTop:10, color: dumpMsg.startsWith('✓') ? 'var(--text-success)' : 'var(--text-error)', textAlign:'center'}}>{dumpMsg}</div>}
             </Card>
             <Card title="Routing Reference">
               {[
