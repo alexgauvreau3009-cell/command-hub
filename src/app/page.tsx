@@ -135,6 +135,10 @@ export default function Home() {
 
   // Brain dump
   const [dumpText, setDumpText] = useState('')
+  const [docItems, setDocItems] = useState<Array<{text: string, service?: string}>>([])
+  const [docLoading, setDocLoading] = useState(false)
+  const [docError, setDocError] = useState('')
+  const [markingItems, setMarkingItems] = useState(false)
 
   // Skylight
   const [skylightItems, setSkylightItems] = useState<SkylightItem[]>(() => {
@@ -204,6 +208,36 @@ export default function Home() {
     } catch (e: any) { setAsanaError(e.message) }
     finally { setAsanaLoading(false) }
   }, [])
+
+  const loadDocItems = useCallback(async () => {
+    setDocLoading(true); setDocError('')
+    try {
+      const res = await fetch('/api/docs')
+      const data = await res.json()
+      if (data.error) throw new Error(data.error)
+      setDocItems((data.lines || []).map((item: any) => ({ text: item.text, service: undefined })))
+    } catch (e: any) { setDocError(e.message) }
+    finally { setDocLoading(false) }
+  }, [])
+
+  const markItemsForwarded = useCallback(async () => {
+    const itemsToMark = docItems.filter(item => item.service)
+    if (itemsToMark.length === 0) return
+
+    setMarkingItems(true)
+    try {
+      const res = await fetch('/api/docs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates: itemsToMark }),
+      })
+      const data = await res.json()
+      if (data.error) throw new Error(data.error)
+      setDocItems([])
+      setDocError('')
+    } catch (e: any) { setDocError(e.message) }
+    finally { setMarkingItems(false) }
+  }, [docItems])
 
   const refreshAll = () => {
     loadTasks(taskFilter); loadEvents(); loadEmails(); loadAsana()
@@ -522,6 +556,51 @@ export default function Home() {
                 <button className={styles.btn} onClick={()=>setDumpText('')}>Clear</button>
               </div>
             </Card>
+
+            <Card title="Import & Mark from Doc" onRefresh={docItems.length > 0 ? undefined : loadDocItems}>
+              {docError && <Err msg={docError} />}
+              {docItems.length === 0 && !docLoading ? (
+                <button className={`${styles.btn} ${styles.btnDark}`} onClick={loadDocItems}>
+                  Load Brain Dump Items
+                </button>
+              ) : docLoading ? (
+                <Loading text="Loading doc items…" />
+              ) : (
+                <>
+                  <p className={styles.dumpHint} style={{marginBottom:12}}>Select where each item was forwarded. Click to mark items and update your doc.</p>
+                  {docItems.map((item, idx) => (
+                    <div key={idx} className={styles.row} style={{marginBottom:8,paddingBottom:8,borderBottom:'1px solid var(--border)'}}>
+                      <div className={styles.rowMain} style={{flex:1}}>
+                        <div className={styles.rowTitle}>{item.text}</div>
+                      </div>
+                      <select
+                        value={item.service || ''}
+                        onChange={e => {
+                          const updated = [...docItems]
+                          updated[idx].service = e.target.value as any
+                          setDocItems(updated)
+                        }}
+                        className={styles.formSelect}
+                        style={{width:120,marginLeft:8}}
+                      >
+                        <option value="">Select…</option>
+                        <option value="Notion">Notion</option>
+                        <option value="Asana">Asana</option>
+                        <option value="Calendar">Calendar</option>
+                        <option value="Skylight">Skylight</option>
+                      </select>
+                    </div>
+                  ))}
+                  <div className={styles.formRow} style={{marginTop:12}}>
+                    <button className={`${styles.btn} ${styles.btnDark}`} onClick={markItemsForwarded} disabled={markingItems || !docItems.some(i=>i.service)}>
+                      {markingItems ? 'Marking…' : '✓ Mark Items in Doc'}
+                    </button>
+                    <button className={styles.btn} onClick={()=>setDocItems([])}>Clear Selection</button>
+                  </div>
+                </>
+              )}
+            </Card>
+
             <Card title="Routing Reference">
               {[
                 ['Business / work tasks','Asana — correct project'],
